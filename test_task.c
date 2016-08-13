@@ -1,4 +1,6 @@
 /*
+ * ** TESTED on CC1310 LaunchPad **
+ *
  * Copyright (c) 2015-2016, Texas Instruments Incorporated
  * All rights reserved.
  *
@@ -88,6 +90,16 @@ PIN_Config ledPinTable[] = {
  *  I have determined by modifying the sleep delay on this reporting task that the CIO interface
  *  does appear to have a direct effect of causing the gpsUartFxn task to lose UART data, guaranteeing
  *  at least 1 NMEA sentence is read as invalid each time the reporting task does its thing.
+ *
+ *  This has been tested on the CC1310 LaunchPad with CC1310_LAUNCHXL.h modified so the RX, TX pins are
+ *  swapped (to account for the fact that my Quectel L80 boosterpack uses J1.3 for GPS_TXD/MCU_RXD, but
+ *  the CC1310 LaunchPad has its J1.3/J1.4 pins swapped in its physical layout relative to what the
+ *  silkscreen says).  This should work well on the CC2650 LaunchPad or CC1350 LaunchPad as long as the
+ *  correct DIO's are used for the GPSPwr control pin and UART pins are configured correctly.
+ *
+ *  As the task uses the PIN_ interface, it's limited to TI Chameleon chipsets like the CC13xx and CC26xx
+ *  however, the MSP432 and other TI-RTOS platforms may be supported by changing all the GPIO PIN_ operations
+ *  with function calls relevant to that platform.
  */
 char nmeabuf[256];
 volatile uint32_t totalNmea = 0, totalNmeaFailed = 0, totalNmeaKnownMsg = 0;
