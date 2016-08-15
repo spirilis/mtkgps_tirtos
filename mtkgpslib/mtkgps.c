@@ -105,7 +105,7 @@ NmeaStreamMsgID_t mtkgps_identify_msgid(NmeaSentence_t *insent)
 			for (bidx = 0; bidx < 32; bidx++) {
 				if (mask & Bitmask_32[bidx]) {
 					if (!strcmp(insent->MessageID, NmeaMap_MessageID[bidx])) {
-						return (NmeaStreamMsgID_t)bidx;
+						return (NmeaStreamMsgID_t)Bitmask_32[bidx];
 					}
 				}
 			}
@@ -234,13 +234,12 @@ NmeaSentence_t * mtkgps_parse_sentence(uint8_t *insent)
 	while (didx < NMEA_SENTENCE_MAX_DATA_FIELDS) {
 		tmpc = cinsent[i];
 		while (tmpc != ',' && tmpc != '*') {
-			i++;
-			tmpc = cinsent[i];
+			tmpc = cinsent[++i];
 		}
 		cinsent[i] = '\0';
 		didx++;
 		if (tmpc == '*') {  // End of data fields; parse checksum, verify checksum, then return valid NmeaSentence_t *
-			for (pst=didx; didx < NMEA_SENTENCE_MAX_DATA_FIELDS; didx++) {
+			for (pst=didx; pst < NMEA_SENTENCE_MAX_DATA_FIELDS; pst++) {
 				outs->dataField[pst] = NULL;  // Clear unused dataField pointers
 			}
 			// Parse checksum
@@ -280,6 +279,7 @@ NmeaSentence_t * mtkgps_parse_sentence(uint8_t *insent)
 
 			return outs;  // Successful; return NmeaSentence_t object.
 		}
+		i++;  // Advance past the '\0' terminator
 		outs->dataField[didx] = cinsent+i;
 	}
 	if (didx == NMEA_SENTENCE_MAX_DATA_FIELDS) { // Invalid NMEA string - too many data fields!
