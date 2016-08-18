@@ -56,18 +56,21 @@
 //! @brief Structure used for mtkgps_identify_msgid() lookup table
 typedef struct {
 	char TalkerID[8];
+	size_t TalkerID_Length;
 	uint32_t StreamMsgID_Bitmask;
 } NmeaStreamMap_TalkerID_t;
 
 //! @brief TalkerID-to-MessageID lookup table used for mtkgps_identify_msgid()
+//! @details This map, combined with the NmeaMap_MessageID[] array, represent a crude hash table
+//!          used to optimize Message ID lookups
 const NmeaStreamMap_TalkerID_t NmeaMap_TalkerID[] = {
-		{"GP", NMEA_GPRMC | NMEA_GPVTG | NMEA_GPGGA | NMEA_GPGSA | NMEA_GPGSV | NMEA_GPGLL | NMEA_GPTXT},
-		{"PMTK", NMEA_PMTK_SYS_MSG | NMEA_PMTK_TXT_MSG | NMEA_PMTK_ACK | NMEA_PMTK_DT_FIX_CTL | NMEA_PMTK_DT_DGPS_MODE \
-				 | NMEA_PMTK_DT_SBAS_ENABLED | NMEA_PMTK_DT_NMEA_OUTPUT | NMEA_PMTK_DT_RELEASE | NMEA_PMTK_LOG | NMEA_PMTK_LSC},
-		{"PQ", NMEA_PQ_EPE | NMEA_PQ_ODOMETER | NMEA_PQ_VELOCITY},
-		{"ECEF", NMEA_ECEFPOSVEL},
-		{"GN", NMEA_GNDTM},
-		{"", 0}
+	{"GP", 2, NMEA_GPRMC | NMEA_GPVTG | NMEA_GPGGA | NMEA_GPGSA | NMEA_GPGSV | NMEA_GPGLL | NMEA_GPTXT},
+	{"PMTK", 4, NMEA_PMTK_SYS_MSG | NMEA_PMTK_TXT_MSG | NMEA_PMTK_ACK | NMEA_PMTK_DT_FIX_CTL | NMEA_PMTK_DT_DGPS_MODE \
+			    | NMEA_PMTK_DT_SBAS_ENABLED | NMEA_PMTK_DT_NMEA_OUTPUT | NMEA_PMTK_DT_RELEASE | NMEA_PMTK_LOG | NMEA_PMTK_LSC},
+	{"PQ", 2, NMEA_PQ_EPE | NMEA_PQ_ODOMETER | NMEA_PQ_VELOCITY},
+	{"ECEF", 4, NMEA_ECEFPOSVEL},
+	{"GN", 2, NMEA_GNDTM},
+	{"", 0, 0}
 };
 
 //! @brief MessageID-to-NmeaStreamMsgID_t bit index lookup table for mtkgps_identify_msgid()
@@ -78,10 +81,10 @@ const char *NmeaMap_MessageID[] = {
 
 //! @brief Performance optimization - bitmask lookup table
 const uint32_t Bitmask_32[] = {
-		0x00000001, 0x00000002, 0x00000004, 0x00000008, 0x00000010, 0x00000020, 0x00000040, 0x00000080,
-		0x00000100, 0x00000200, 0x00000400, 0x00000800, 0x00001000, 0x00002000, 0x00004000, 0x00008000,
-		0x00010000, 0x00020000, 0x00040000, 0x00080000, 0x00100000, 0x00200000, 0x00400000, 0x00800000,
-		0x01000000, 0x02000000, 0x04000000, 0x08000000, 0x10000000, 0x20000000, 0x40000000, 0x80000000
+	0x00000001, 0x00000002, 0x00000004, 0x00000008, 0x00000010, 0x00000020, 0x00000040, 0x00000080,
+	0x00000100, 0x00000200, 0x00000400, 0x00000800, 0x00001000, 0x00002000, 0x00004000, 0x00008000,
+	0x00010000, 0x00020000, 0x00040000, 0x00080000, 0x00100000, 0x00200000, 0x00400000, 0x00800000,
+	0x01000000, 0x02000000, 0x04000000, 0x08000000, 0x10000000, 0x20000000, 0x40000000, 0x80000000
 };
 
 /*!
@@ -89,7 +92,8 @@ const uint32_t Bitmask_32[] = {
  * @details Used to quickly identify information streamed from the GPS to the MCU, this function performs a lookup
  *          of the NMEA data to identify the type of data being presented in the NmeaSentence_t.  This boils down
  *          to a simple enum integer which is evaluated easily using a switch() statement.  As the enum values just
- *          happen to be bitfields, it is easy to compare against a bitmask of "allowed" message IDs.
+ *          happen to be bitfields, it is easy to compare against a bitmask of "allowed" message IDs.  It's a crude
+ *          hash table.
  * @return enum NmeaStreamMsgID_t value (corresponding to a 32-bit unsigned integer bitfield)
  */
 NmeaStreamMsgID_t mtkgps_identify_msgid(NmeaSentence_t *insent)
@@ -102,6 +106,7 @@ NmeaStreamMsgID_t mtkgps_identify_msgid(NmeaSentence_t *insent)
 	while (NmeaMap_TalkerID[i].StreamMsgID_Bitmask != 0) {
 		if (!strcmp(insent->Talker, NmeaMap_TalkerID[i].TalkerID)) {
 			mask = NmeaMap_TalkerID[i].StreamMsgID_Bitmask;
+			// Search for MessageID within NmeaMap_MessageID[] matching TalkerID bitmask first
 			for (bidx = 0; bidx < 32; bidx++) {
 				if (mask & Bitmask_32[bidx]) {
 					if (!strcmp(insent->MessageID, NmeaMap_MessageID[bidx])) {
@@ -132,34 +137,48 @@ NmeaParseError_t mtkgps_parse_errno;
  * @return A pointer to an NmeaSentence_t stored within a finite-size local pool, or NULL if there was an error or
  *         if this is not a valid NMEA sentence.
  */
-NmeaSentence_t * mtkgps_parse_sentence(uint8_t *insent)
+NmeaSentence_t * mtkgps_parse_sentence(const char *insent, NmeaSentence_t *dest)
 {
-	char *cinsent = (char *)insent, tmpc;  // insent = input sentence, cinsent = char-casted input sentence
-	size_t slen = strlen(cinsent);
+	char tmpc;
+	size_t slen = strlen(insent);
 	size_t i = 0, pst = 0, didx = 0; // i, pst are generic markers; didx keeps track of dataField[] entries
 	NmeaSentence_t *outs;
 	uint8_t computedChecksum = 0;
 
 	mtkgps_parse_errno = NMEA_PARSE_OK;
 
-	if (slen < (NMEA_SENTENCE_MAX_TALKER_ID_LENGTH + \
-			    NMEA_SENTENCE_MAX_MESSAGE_ID_LENGTH +
-				4)) {  // 4 - the $, the * and the two checksum digits
+	if (slen < NMEA_SENTENCE_MIN_SIZE) {  // Talker+Message usually >=5, plus 4 - the $, the * and the two checksum digits
 		mtkgps_parse_errno = NMEA_PARSE_ERR_TOO_SHORT;
 		return NULL;
 	}
 
-	// Find an unused parsedSentencePool object
-	for (i=0; i < NMEA_SENTENCE_POOL_SIZE; i++) {
-		if (parsedSentencePool[i].Talker[0] == '\0') {
-			break;
-		}
-	}
-	if (i == NMEA_SENTENCE_POOL_SIZE) {
-		mtkgps_parse_errno = NMEA_PARSE_ERR_NO_FREE_OBJECTS;
+	if (slen > NMEA_SENTENCE_MAX_SIZE) {
+		mtkgps_parse_errno = NMEA_PARSE_ERR_TOO_LONG;
 		return NULL;
 	}
-	outs = &parsedSentencePool[i];
+
+	if (dest == NULL) {
+		// Find an unused parsedSentencePool object
+		for (i=0; i < NMEA_SENTENCE_POOL_SIZE; i++) {
+			if (parsedSentencePool[i].Talker[0] == '\0') {
+				break;
+			}
+		}
+		if (i == NMEA_SENTENCE_POOL_SIZE) {
+			mtkgps_parse_errno = NMEA_PARSE_ERR_NO_FREE_OBJECTS;
+			return NULL;
+		}
+		outs = &parsedSentencePool[i];
+	} else {
+		outs = dest;
+	}
+
+	// Copy (if necessary) raw NMEA sentence data to NmeaSentence_t.sentence buffer
+	if ( (void *)outs->sentence != (void *)insent ) {  // Validate whether this actually needs copying
+		System_printf("Copying %p to %p...\n", insent, outs->sentence); System_flush();
+		memcpy(outs->sentence, insent, slen);  // Copy sentence to local buffer
+	}
+	char *cinsent = &outs->sentence[0];
 
 	if (cinsent[0] != '$') {
 		mtkgps_parse_errno = NMEA_PARSE_ERR_INVALID_STARTCHAR;
@@ -173,26 +192,18 @@ NmeaSentence_t * mtkgps_parse_sentence(uint8_t *insent)
 		slen--;
 	}
 
-	if (!strncmp(cinsent+1, "GP", 2)) {
-		memcpy(outs->Talker, cinsent+1, 2);
-		outs->Talker[2] = '\0';
-		pst = 3;  // First byte after "$GP"
+	i = 0;
+	while (NmeaMap_TalkerID[i].StreamMsgID_Bitmask != 0) {
+		if (!strncmp(cinsent+1, NmeaMap_TalkerID[i].TalkerID, NmeaMap_TalkerID[i].TalkerID_Length)) {
+			memcpy(outs->Talker, cinsent+1, NmeaMap_TalkerID[i].TalkerID_Length);
+			pst = NmeaMap_TalkerID[i].TalkerID_Length;
+			outs->Talker[pst] = '\0';
+			pst++;
+			break;
+		}
+		i++;
 	}
-	if (!strncmp(cinsent+1, "PMTK", 4)) {
-		memcpy(outs->Talker, cinsent+1, 4);
-		outs->Talker[4] = '\0';
-		pst = 5;  // First byte after "$PMTK"
-	}
-	if (!strncmp(cinsent+1, "PQ", 2)) {
-		memcpy(outs->Talker, cinsent+1, 2);
-		outs->Talker[2] = '\0';
-		pst = 3;  // First byte after "$PQ"
-	}
-	if (!strncmp(cinsent+1, "ECEF", 4)) {
-		outs->Talker[4] = '\0';
-		memcpy(outs->Talker, cinsent+1, 4);
-		pst = 5;  // First byte after "$ECEF"
-	}
+
 	if (pst == 0) {
 		mtkgps_parse_errno = NMEA_PARSE_ERR_UNKNOWN_TALKER;
 		return NULL;
@@ -217,18 +228,14 @@ NmeaSentence_t * mtkgps_parse_sentence(uint8_t *insent)
 	while (cinsent[i] != ',' && i < slen) {
 		i++;
 	}
-	if (i == slen || (i-pst) > NMEA_SENTENCE_MAX_MESSAGE_ID_LENGTH) {  // Reached end of string before finding our ',', or, MessageID is unrealistically long?
-		if (i == slen) {
-			mtkgps_parse_errno = NMEA_PARSE_ERR_MISSING_INITIAL_COMMA;
-		} else {
-			mtkgps_parse_errno = NMEA_PARSE_ERR_MESSAGE_ID_TOO_LONG;
-		}
+	if (i == slen) {  // Reached end of string before finding our ','
+		mtkgps_parse_errno = NMEA_PARSE_ERR_MISSING_INITIAL_COMMA;
 		outs->Talker[0] = '\0';  // free buffer before bailing
 		return NULL;
 	}
-	memcpy(outs->MessageID, cinsent+pst, i-pst);
-	outs->MessageID[i-pst] = '\0';
-	pst = ++i;  // Advance past the first ',' for our data fields
+	cinsent[i] = '\0';
+	outs->MessageID = cinsent+pst;
+	pst = ++i;  // Advance past the first ',' (now a '\0' terminating Message ID) for our data fields
 
 	outs->dataField[didx] = cinsent+i;
 	while (didx < NMEA_SENTENCE_MAX_DATA_FIELDS) {
@@ -290,6 +297,25 @@ NmeaSentence_t * mtkgps_parse_sentence(uint8_t *insent)
 	return NULL;  // shouldn't ever get here
 }
 
+//! @brief Re-write pointer values within an NmeaSentence_t after copying via Mailbox
+//! @details This is necessary after pulling an NmeaSentence_t from a Mailbox since the Mailbox_post/pend
+//!          mechanism internally performs a buffer copy, thus rendering the pointer addresses invalid.
+void mtkgps_repointer(NmeaSentence_t *s)
+{
+	int i;
+
+	void *newHead = s;
+	void *oldHead = s->headPointer;
+
+	s->MessageID = (char *)((uint8_t *)newHead + ((uint8_t *)s->MessageID - (uint8_t *)oldHead));
+	for (i=0; i < NMEA_SENTENCE_MAX_DATA_FIELDS; i++) {
+		if (s->dataField[i] != NULL) {
+			s->dataField[i] = (char *)((uint8_t *)newHead + ((uint8_t *)s->dataField[i] - (uint8_t *)oldHead));
+		}
+	}
+	s->headPointer = newHead;
+}
+
 const char * mtkgps_parse_strerror(NmeaParseError_t pe)
 {
 	switch (pe) {
@@ -297,6 +323,8 @@ const char * mtkgps_parse_strerror(NmeaParseError_t pe)
 		return "OK";
 	case NMEA_PARSE_ERR_TOO_SHORT:
 		return "TOO_SHORT";
+	case NMEA_PARSE_ERR_TOO_LONG:
+		return "TOO_LONG";
 	case NMEA_PARSE_ERR_NO_FREE_OBJECTS:
 		return "NO_FREE_OBJECTS";
 	case NMEA_PARSE_ERR_INVALID_STARTCHAR:
@@ -307,8 +335,6 @@ const char * mtkgps_parse_strerror(NmeaParseError_t pe)
 		return "MISSING_ASTERISK";
 	case NMEA_PARSE_ERR_MISSING_INITIAL_COMMA:
 		return "MISSING_INITIAL_COMMA";
-	case NMEA_PARSE_ERR_MESSAGE_ID_TOO_LONG:
-		return "MESSAGE_ID_TOO_LONG";
 	case NMEA_PARSE_ERR_NO_CHECKSUM:
 		return "NO_CHECKSUM";
 	case NMEA_PARSE_ERR_CHECKSUMS_DONT_MATCH:
@@ -322,21 +348,49 @@ const char * mtkgps_parse_strerror(NmeaParseError_t pe)
 
 size_t mtkgps_synthesize_sentence(NmeaSentence_t *nobj, char *buf)
 {
-	size_t len = 0, i = 0, j;
+	size_t len = 0, i = 0, j, k;
 	uint8_t cksum = 0;
 
 	buf[len] = '$';
 	len++;
-	while (nobj->Talker[i] != '\0' && i < NMEA_SENTENCE_MAX_TALKER_ID_LENGTH) {
-		buf[len] = nobj->Talker[i];
-		len++;
-		i++;
-	}
-	i = 0;
-	while (nobj->MessageID[i] != '\0' && i < NMEA_SENTENCE_MAX_MESSAGE_ID_LENGTH) {
-		buf[len] = nobj->MessageID[i];
-		len++;
-		i++;
+	if (nobj->parsedMessageID != 0 && nobj->parsedMessageID != NMEA_UNKNOWN) {
+		i = 0;
+		while (NmeaMap_TalkerID[i].StreamMsgID_Bitmask != 0) {
+			if (NmeaMap_TalkerID[i].StreamMsgID_Bitmask & nobj->parsedMessageID) {
+				j = 0;
+				while (NmeaMap_TalkerID[i].TalkerID[j] != '\0') {
+					buf[len] = NmeaMap_TalkerID[i].TalkerID[j];
+					len++;
+					j++;
+				}
+				// Locate the index corresponding to this bitmask
+				for (j=0; j < 32; j++) {
+					if (Bitmask_32[j] & nobj->parsedMessageID) {
+						k = 0;
+						while (NmeaMap_MessageID[j][k] != '\0') {
+							buf[len] = NmeaMap_MessageID[j][k];
+							k++;
+							len++;
+						}
+						break;
+					}
+				}
+				break;
+			}
+			i++;
+		}
+	} else {
+		while (nobj->Talker[i] != '\0' && i < NMEA_SENTENCE_MAX_TALKER_ID_LENGTH) {
+			buf[len] = nobj->Talker[i];
+			len++;
+			i++;
+		}
+		i = 0;
+		while (nobj->MessageID[i] != '\0') {
+			buf[len] = nobj->MessageID[i];
+			len++;
+			i++;
+		}
 	}
 	for (j=0; j < NMEA_SENTENCE_MAX_DATA_FIELDS; j++) {
 		if (nobj->dataField[j] == NULL) {
